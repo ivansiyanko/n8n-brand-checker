@@ -1,0 +1,309 @@
+{
+  "name": "Brand Consistency Checker - AI-Powered Visual QC for Brand Guidelines",
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "brand-check",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const body = $input.first().json.body;\nreturn [{ json: {\n  imageUrl: body.image_url || '',\n  brandGuideId: body.brand_guide_id || 'default',\n  referenceImages: body.reference_images || [],\n  campaign: body.campaign || '',\n  product: body.product || '',\n  channel: body.channel || 'general',\n  creator: body.creator || '',\n  notifyChannel: body.notify_channel || '#brand-review',\n  brandPalette: body.brand_palette || ['#000000', '#FFFFFF', '#C9A84C'],\n  logoSpecs: body.logo_specs || { minSizeRatio: 5, maxSizeRatio: 15, position: 'bottom-center', clearSpace: 16 },\n  passThreshold: body.pass_threshold || 70\n}}];"
+      },
+      "id": "validate-input",
+      "name": "Validate & Parse Input",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "={{ $json.imageUrl }}",
+        "options": {
+          "response": {
+            "response": {
+              "responseFormat": "file"
+            }
+          }
+        }
+      },
+      "id": "download-image",
+      "name": "Download Image",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "command": "convert /tmp/brand_check_image.jpg -resize 100x100! -depth 8 txt:- 2>/dev/null | tail -n +2 | awk '{print $3}' | sort | uniq -c | sort -rn | head -10"
+      },
+      "id": "extract-colors",
+      "name": "Extract Dominant Colors",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        880,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "command": "identify -format '{\"width\":%w,\"height\":%h,\"colorspace\":\"%r\",\"format\":\"%m\",\"depth\":%z}' /tmp/brand_check_image.jpg 2>/dev/null || echo '{\"error\":\"identify failed\"}'"
+      },
+      "id": "extract-metadata",
+      "name": "Extract Image Metadata",
+      "type": "n8n-nodes-base.executeCommand",
+      "typeVersion": 1,
+      "position": [
+        880,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "model": "gpt-4o",
+        "messages": {
+          "values": [
+            {
+              "role": "system",
+              "content": "You are a brand consistency auditor with expertise in visual identity and design systems. You analyze images against brand guidelines and provide detailed, actionable scoring."
+            },
+            {
+              "role": "user",
+              "content": "Analyze this image for brand consistency. Score each category 0-100.\n\nBrand Guidelines:\n- Brand Palette: {{ $('Validate & Parse Input').first().json.brandPalette.join(', ') }}\n- Logo Specs: min size {{ $('Validate & Parse Input').first().json.logoSpecs.minSizeRatio }}% of image, position {{ $('Validate & Parse Input').first().json.logoSpecs.position }}, clear space {{ $('Validate & Parse Input').first().json.logoSpecs.clearSpace }}px\n- Channel: {{ $('Validate & Parse Input').first().json.channel }}\n- Campaign: {{ $('Validate & Parse Input').first().json.campaign }}\n- Product: {{ $('Validate & Parse Input').first().json.product }}\n\nDominant colors extracted: {{ $('Extract Dominant Colors').first().json.stdout }}\n\nReturn JSON with:\n- palette_score, palette_notes\n- logo_score, logo_notes\n- typography_score, typography_notes\n- composition_score, composition_notes\n- style_score, style_notes\n- artifact_score, artifact_notes\n- technical_score, technical_notes\n- overall_verdict: PASS or FAIL\n- summary: 2-3 sentence assessment\n- top_issues: array of critical issues"
+            }
+          ]
+        },
+        "options": {
+          "temperature": 0.2,
+          "responseFormat": "json_object"
+        }
+      },
+      "id": "ai-brand-analysis",
+      "name": "AI Brand Analysis",
+      "type": "n8n-nodes-base.openAi",
+      "typeVersion": 1.8,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const analysis = JSON.parse($input.first().json.message.content);\nconst config = $('Validate & Parse Input').first().json;\n\nconst weights = {\n  palette: 0.20,\n  logo: 0.15,\n  typography: 0.10,\n  composition: 0.15,\n  style: 0.20,\n  artifact: 0.10,\n  technical: 0.10\n};\n\nconst overallScore = Math.round(\n  (analysis.palette_score * weights.palette) +\n  (analysis.logo_score * weights.logo) +\n  (analysis.typography_score * weights.typography) +\n  (analysis.composition_score * weights.composition) +\n  (analysis.style_score * weights.style) +\n  (analysis.artifact_score * weights.artifact) +\n  (analysis.technical_score * weights.technical)\n);\n\nconst verdict = overallScore >= config.passThreshold ? 'PASS' : 'FAIL';\n\nreturn [{ json: {\n  overallScore,\n  verdict,\n  paletteScore: analysis.palette_score,\n  paletteNotes: analysis.palette_notes,\n  logoScore: analysis.logo_score,\n  logoNotes: analysis.logo_notes,\n  typographyScore: analysis.typography_score,\n  typographyNotes: analysis.typography_notes,\n  compositionScore: analysis.composition_score,\n  compositionNotes: analysis.composition_notes,\n  styleScore: analysis.style_score,\n  styleNotes: analysis.style_notes,\n  artifactScore: analysis.artifact_score,\n  artifactNotes: analysis.artifact_notes,\n  technicalScore: analysis.technical_score,\n  technicalNotes: analysis.technical_notes,\n  summary: analysis.summary,\n  topIssues: analysis.top_issues || [],\n  campaign: config.campaign,\n  product: config.product,\n  channel: config.channel,\n  creator: config.creator,\n  imageUrl: config.imageUrl,\n  checkedAt: new Date().toISOString()\n}}];"
+      },
+      "id": "calculate-score",
+      "name": "Calculate Brand Score",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "operation": "appendOrUpdate",
+        "documentId": {
+          "__rl": true,
+          "value": "={{ $credentials.brandCheckSheetId }}"
+        },
+        "sheetName": "Brand Checks",
+        "columns": {
+          "mappingMode": "defineBelow",
+          "value": {
+            "Date": "={{ $json.checkedAt.split('T')[0] }}",
+            "Campaign": "={{ $json.campaign }}",
+            "Product": "={{ $json.product }}",
+            "Channel": "={{ $json.channel }}",
+            "Score": "={{ $json.overallScore }}",
+            "Verdict": "={{ $json.verdict }}",
+            "Palette": "={{ $json.paletteScore }}",
+            "Logo": "={{ $json.logoScore }}",
+            "Typography": "={{ $json.typographyScore }}",
+            "Composition": "={{ $json.compositionScore }}",
+            "Style": "={{ $json.styleScore }}",
+            "Artifacts": "={{ $json.artifactScore }}",
+            "Technical": "={{ $json.technicalScore }}",
+            "Issues": "={{ $json.topIssues.join('; ') }}",
+            "Creator": "={{ $json.creator }}"
+          }
+        },
+        "options": {}
+      },
+      "id": "save-to-sheets",
+      "name": "Log Brand Check",
+      "type": "n8n-nodes-base.googleSheets",
+      "typeVersion": 4.5,
+      "position": [
+        1540,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "channel": "={{ $('Validate & Parse Input').first().json.notifyChannel }}",
+        "text": "={{ $json.verdict === 'PASS' ? ':white_check_mark:' : ':x:' }} *Brand Check: {{ $json.verdict }}* (Score: {{ $json.overallScore }}/100)\n\n:art: *{{ $json.campaign }}* — {{ $json.product }} ({{ $json.channel }})\n\n:bar_chart: *Scores:*\n• Color Palette: {{ $json.paletteScore }}/100\n• Logo: {{ $json.logoScore }}/100\n• Typography: {{ $json.typographyScore }}/100\n• Composition: {{ $json.compositionScore }}/100\n• Style Match: {{ $json.styleScore }}/100\n• AI Artifacts: {{ $json.artifactScore }}/100\n• Technical: {{ $json.technicalScore }}/100\n\n{{ $json.topIssues.length > 0 ? ':memo: *Top Issues:*\\n' + $json.topIssues.map(i => '• ' + i).join('\\n') : '' }}\n\n:speech_balloon: {{ $json.summary }}"
+      },
+      "id": "slack-report",
+      "name": "Post Brand Report",
+      "type": "n8n-nodes-base.slack",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        400
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ verdict: $json.verdict, score: $json.overallScore, scores: { palette: $json.paletteScore, logo: $json.logoScore, typography: $json.typographyScore, composition: $json.compositionScore, style: $json.styleScore, artifacts: $json.artifactScore, technical: $json.technicalScore }, topIssues: $json.topIssues, summary: $json.summary }) }}"
+      },
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1760,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Validate & Parse Input",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate & Parse Input": {
+      "main": [
+        [
+          {
+            "node": "Download Image",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Download Image": {
+      "main": [
+        [
+          {
+            "node": "Extract Dominant Colors",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Extract Image Metadata",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Dominant Colors": {
+      "main": [
+        [
+          {
+            "node": "AI Brand Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Image Metadata": {
+      "main": [
+        [
+          {
+            "node": "AI Brand Analysis",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "AI Brand Analysis": {
+      "main": [
+        [
+          {
+            "node": "Calculate Brand Score",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Calculate Brand Score": {
+      "main": [
+        [
+          {
+            "node": "Log Brand Check",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Post Brand Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Log Brand Check": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "tags": [
+    {
+      "name": "ai"
+    },
+    {
+      "name": "brand"
+    },
+    {
+      "name": "quality-assurance"
+    },
+    {
+      "name": "gpt-4o-vision"
+    },
+    {
+      "name": "automation"
+    }
+  ]
+}
